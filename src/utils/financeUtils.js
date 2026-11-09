@@ -8,18 +8,18 @@ export const money = (value, compact = false) => compact
 export const itemName = (item) => item.For.trim()
 export const metrics = (items = []) => {
   const total = items.reduce((sum, item) => sum + number(item['To Give']), 0)
-  const given = items.reduce((sum, item) => sum + number(item['Given (amount)']), 0)
-  const remaining = items.reduce((sum, item) => sum + number(item['Remain to Give (amount)']), 0)
+  const given = items.reduce((sum, item) => sum + number(item['Amount Given']), 0)
+  const remaining = items.reduce((sum, item) => sum + number(item['Amount Remain']), 0)
   const monthly = items.reduce((sum, item) => sum + number(item['Monthly Release']), 0)
   const totalSavings = items.filter(item => item.Essense === 'Store' && item.Type === 'Saving')
-    .reduce((sum, item) => sum + number(item['Given (amount)']), 0)
+    .reduce((sum, item) => sum + number(item['Amount Given']), 0)
   const totalNonCibilRemainingReturn = items.filter(item => item.Type === 'NonCIBILReturn')
-    .reduce((sum, item) => sum + number(item['Remain to Give (amount)']), 0)
+    .reduce((sum, item) => sum + number(item['Amount Remain']), 0)
   const totalCibilRemainingReturn = items.filter(item => item.Type === 'CIBILReturn')
-    .reduce((sum, item) => sum + number(item['Remain to Give (amount)']), 0)
+    .reduce((sum, item) => sum + number(item['Amount Remain']), 0)
   const monthlyRelease = items.filter(item => item.Essense === 'Release')
     .reduce((sum, item) => sum + number(item['Monthly Release']), 0)
-  const completed = items.filter(item => number(item['Remain to Give (amount)']) === 0).length
+  const completed = items.filter(item => number(item['Amount Remain']) === 0).length
   return {
     total,
     given,
