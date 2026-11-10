@@ -3,7 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { Float, OrbitControls, Sparkles } from '@react-three/drei'
 import * as THREE from 'three'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ArrowDownRight, ArrowUpRight, Check, CircleHelp, Command, Compass, CreditCard, LayoutGrid, Leaf, Search, SlidersHorizontal, Sparkle, Wallet, X } from 'lucide-react'
+import { ArrowDownRight, ArrowUpRight, Check, CircleHelp, Command, Compass, CreditCard, LayoutGrid, Leaf, RefreshCw, Search, SlidersHorizontal, Sparkle, Wallet, X } from 'lucide-react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import fallbackData from './fallbackData.json'
 import { metrics, money, moneyPrecise, number, itemName, categoryMetrics, typeLabels, monthsLabel, spendingTimeline } from './utils/financeUtils'
@@ -12,7 +12,10 @@ import './App.css'
 const types = ['Spending', 'NonCIBILReturn', 'CIBILReturn', 'Saving']
 const palette = ['#75c8a0', '#e3ba72', '#83bcdf', '#a99be9']
 const KEY_STORAGE = 'finances.sheetdb.key'
+const DATA_STORAGE = 'finances.sheetdb.data'
+const SAMPLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/149yD_gRs2HvGO7RBGBECTVbhoxs7xxLBrni1TDAbpRo/edit?usp=sharing'
 const readStoredKey = () => { try { return window.localStorage.getItem(KEY_STORAGE)?.trim() || '' } catch { return '' } }
+const readStoredData = (key) => { try { const saved = JSON.parse(window.localStorage.getItem(DATA_STORAGE) || 'null'); return saved?.apiKey === key && Array.isArray(saved.rows) ? saved : null } catch { return null } }
 
 function MiniTree({ position, scale = 1, kind = 0, tint = '#47785a' }) {
   const crown = useRef()
@@ -117,9 +120,10 @@ function App() {
   const [apiKey, setApiKey] = useState(readStoredKey)
   const [keyDraft, setKeyDraft] = useState('')
   const [keyEntryOpen, setKeyEntryOpen] = useState(false)
-  const [finances, setFinances] = useState(fallbackData)
-  const [usingFallback, setUsingFallback] = useState(true)
-  const [dataStatus, setDataStatus] = useState('loading')
+  const [finances, setFinances] = useState(() => readStoredData(apiKey)?.rows || fallbackData)
+  const [usingFallback, setUsingFallback] = useState(() => !readStoredData(apiKey))
+  const [lastUpdated, setLastUpdated] = useState(() => readStoredData(apiKey)?.updatedAt || '')
+  const [dataStatus, setDataStatus] = useState(() => apiKey ? (readStoredData(apiKey) ? 'ready' : 'idle') : 'setup')
   const [dataError, setDataError] = useState('')
   const [view, setView] = useState('Overview')
   const [releaseTab, setReleaseTab] = useState('records')
@@ -130,36 +134,44 @@ function App() {
   const [showAll, setShowAll] = useState(false)
   const [detail, setDetail] = useState(null)
   const [spendGrouping, setSpendGrouping] = useState('month')
+  const autoRefreshForKey = useRef('')
   useEffect(() => {
+    const saved = readStoredData(apiKey)
+    const updatedAtMs = Date.parse(saved?.updatedAt || '')
+    const isStale = !saved || !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs >= 12 * 60 * 60 * 1000
+    setFinances(saved?.rows || fallbackData)
+    setLastUpdated(saved?.updatedAt || '')
+    setUsingFallback(!saved)
     if (!apiKey) {
       setDataStatus('setup')
-      setUsingFallback(true)
-      return
+    } else {
+      setDataStatus(saved ? 'ready' : 'idle')
+      if (isStale && autoRefreshForKey.current !== apiKey) {
+        autoRefreshForKey.current = apiKey
+        refreshData()
+      }
     }
-    setDataStatus('loading')
-    setDataError('')
-    const controller = new AbortController()
-    fetch(`https://sheetdb.io/api/v1/${encodeURIComponent(apiKey)}`, { signal: controller.signal })
-      .then(response => {
-        if (!response.ok) throw new Error(`SheetDB returned ${response.status}. Check your API key and sheet access.`)
-        return response.json()
-      })
-      .then(rows => {
-        if (!Array.isArray(rows)) throw new Error('SheetDB response should be an array of financial records.')
-        setFinances(rows)
-        setUsingFallback(false)
-        setDataStatus('ready')
-      })
-      .catch(error => {
-        if (error.name !== 'AbortError') {
-          setFinances(fallbackData)
-          setUsingFallback(true)
-          setDataError(error.message || 'Could not load records from SheetDB.')
-          setDataStatus('error')
-        }
-      })
-    return () => controller.abort()
   }, [apiKey])
+  const refreshData = async () => {
+    if (!apiKey) { setKeyDraft(''); setKeyEntryOpen(true); return }
+    setDataStatus('refreshing')
+    setDataError('')
+    try {
+      const response = await fetch(`https://sheetdb.io/api/v1/${encodeURIComponent(apiKey)}`)
+      if (!response.ok) throw new Error(`SheetDB returned ${response.status}. Check your API key and sheet access.`)
+      const rows = await response.json()
+      if (!Array.isArray(rows)) throw new Error('SheetDB response should be an array of financial records.')
+      const updatedAt = new Date().toISOString()
+      window.localStorage.setItem(DATA_STORAGE, JSON.stringify({ apiKey, rows, updatedAt }))
+      setFinances(rows)
+      setLastUpdated(updatedAt)
+      setUsingFallback(false)
+      setDataStatus('ready')
+    } catch (error) {
+      setDataError(error.message || 'Could not load records from SheetDB.')
+      setDataStatus('error')
+    }
+  }
   const saveApiKey = (event) => {
     event.preventDefault()
     const nextKey = keyDraft.trim()
@@ -170,6 +182,7 @@ function App() {
       return
     }
     setApiKey(nextKey)
+    setDataError('')
     setKeyEntryOpen(false)
     setKeyDraft('')
   }
@@ -194,12 +207,12 @@ function App() {
     <header className="topbar glass">
       <a className="brand" href="#"><span className="brand-icon"><Leaf size={18}/></span><span>finances<span className="brand-dot">.</span></span></a>
       <nav>{[['Overview',LayoutGrid],['Release',ArrowUpRight],['Store',Wallet],['All Items',Command]].map(([label,Icon])=><button key={label} className={view===label?'nav-active':''} onClick={()=>{setView(label);setFilter('All');if(label==='Release')setReleaseTab('records')}}><Icon size={15}/>{label}</button>)}</nav>
-      <div className="top-actions"><span className="date-label"><span className="live-dot"/>Your money, in perspective</span><div className="avatar">A</div></div>
+      <div className="top-actions"><span className="date-label"><span className="live-dot"/>{lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleString()}` : 'Not updated yet'}</span><button className="refresh-button" onClick={refreshData} disabled={dataStatus==='refreshing'}><RefreshCw size={13} className={dataStatus==='refreshing'?'spinning':''}/>{dataStatus==='refreshing'?'Updating':'Refresh data'}</button><div className="avatar">A</div></div>
     </header>
 
     <div className="page-heading"><div><div className="eyebrow"><span/> PERSONAL FINANCIAL ATLAS <span className="eyebrow-line"/></div><h1>{view === 'Overview' ? <>A clearer view of<br/><em>what you are building.</em></> : view}</h1></div></div>
-    {dataStatus === 'loading' && <div className="sync-loader" role="status" aria-live="polite"><div className="sync-orbit"><i/><i/><i/><span><Sparkle size={14}/></span></div><div className="sync-copy"><b>Gathering your financial world</b><span>Securely syncing records from your sheet</span><div className="sync-progress"><i/></div></div><span className="sync-status">SYNCING</span></div>}
-    {usingFallback && <div className="data-notice fallback" role={dataStatus === 'error' ? 'alert' : 'status'}><span><b>TEST DATA</b> {dataStatus === 'error' ? `Live data unavailable: ${dataError}` : dataStatus === 'loading' ? 'Showing sample records while live data loads.' : 'Showing sample records. Connect SheetDB to load your live data.'}</span><button onClick={()=>{setKeyDraft(apiKey);setKeyEntryOpen(true)}}>{apiKey ? 'Update SheetDB key' : 'Connect SheetDB'}</button></div>}
+    {dataError && <div className="data-notice error" role="alert">Refresh failed: {dataError}. {usingFallback ? 'Showing sample records.' : 'Showing saved records.'}</div>}
+    {usingFallback && <div className="data-notice fallback" role="status"><span><b>TEST DATA</b> {apiKey ? 'No saved data yet. Refresh to load records from SheetDB.' : 'Showing sample records. Connect SheetDB to load your data.'}</span><div className="notice-actions"><a className="sample-sheet-button" href={SAMPLE_SHEET_URL} target="_blank" rel="noopener noreferrer">View sample sheet</a><button onClick={()=>{setKeyDraft(apiKey);setKeyEntryOpen(true)}}>{apiKey ? 'Update SheetDB key' : 'Connect SheetDB'}</button></div></div>}
 
     {view === 'Release' && releaseTab === 'spending' ? <section className="release-content"><div className="release-subtabs"><button onClick={()=>setReleaseTab('records')}>Table</button><button className="active" aria-current="page">Graph</button></div><div className="spending-page"><div className="spending-page-heading"><div className="eyebrow">PURCHASES & SUBSCRIPTIONS</div><h2>Spending over time</h2><p>See monthly and yearly peaks across your dated records.</p></div><Panel className="spending-trend"><div className="panel-heading"><div><div className="eyebrow">SPENDING TREND</div><h3>{spendGrouping === 'month' ? 'Monthly' : 'Yearly'} totals</h3></div><div className="chart-toggle"><button className={spendGrouping==='month'?'active':''} onClick={()=>setSpendGrouping('month')}>Month</button><button className={spendGrouping==='year'?'active':''} onClick={()=>setSpendGrouping('year')}>Year</button></div></div><SpendingLine data={spendTrend}/><p className="chart-note">Subscriptions use their monthly release amount; other dated ranges are spread across their months. The timeline ends at the current month.</p></Panel></div></section> : view === 'Overview' ? <>
       <section className="hero-layout">
