@@ -13,9 +13,44 @@ const types = ['Spending', 'NonCIBILReturn', 'CIBILReturn', 'Saving']
 const palette = ['#75c8a0', '#e3ba72', '#83bcdf', '#a99be9']
 const KEY_STORAGE = 'finances.sheetdb.key'
 const DATA_STORAGE = 'finances.sheetdb.data'
+const TABLE_PREFERENCES_STORAGE = 'finances.table.preferences'
+const SPENDING_RANGE_STORAGE = 'finances.spending.range'
 const SAMPLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/149yD_gRs2HvGO7RBGBECTVbhoxs7xxLBrni1TDAbpRo/edit?usp=sharing'
 const readStoredKey = () => { try { return window.localStorage.getItem(KEY_STORAGE)?.trim() || '' } catch { return '' } }
 const readStoredData = (key) => { try { const saved = JSON.parse(window.localStorage.getItem(DATA_STORAGE) || 'null'); return saved?.apiKey === key && Array.isArray(saved.rows) ? saved : null } catch { return null } }
+const readTablePreferences = () => {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(TABLE_PREFERENCES_STORAGE) || 'null')
+    return {
+      search: typeof saved?.search === 'string' ? saved.search : '',
+      filter: typeof saved?.filter === 'string' ? saved.filter : 'All',
+      sort: typeof saved?.sort === 'string' ? saved.sort : 'Highest remaining',
+    }
+  } catch { return { search: '', filter: 'All', sort: 'Highest remaining' } }
+}
+const defaultSpendingRange = () => {
+  const now = new Date()
+  return { start: `${now.getFullYear()}-01`, end: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` }
+}
+const readSpendingRange = () => {
+  const defaults = defaultSpendingRange()
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SPENDING_RANGE_STORAGE) || 'null')
+    return {
+      start: /^\d{4}-\d{2}$/.test(saved?.start || '') ? saved.start : defaults.start,
+      end: /^\d{4}-\d{2}$/.test(saved?.end || '') ? saved.end : defaults.end,
+    }
+  } catch { return defaults }
+}
+const dateSortValue = (value) => {
+  const text = String(value || '').trim().split('_to_')[0]
+  const match = text.match(/^(\d{1,2})\/(\d{2}|\d{4})$/)
+  if (!match) return null
+  let year = Number(match[2])
+  if (year < 100) year += year >= 70 ? 1900 : 2000
+  const month = Number(match[1])
+  return month >= 1 && month <= 12 ? year * 12 + month : null
+}
 
 function MiniTree({ position, scale = 1, kind = 0, tint = '#47785a' }) {
   const crown = useRef()
@@ -104,11 +139,20 @@ function Panel({ className = '', children }) { return <motion.section className=
 function SpendingTooltip({ active, payload, label }) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
-  return <div className="chart-point-value"><b>{label}</b><div className="chart-point-items">{point.items.map(item=><div key={item.name}><span>{item.name}</span><span>{moneyPrecise(item.value)}</span></div>)}</div><div className="chart-point-total"><b>Total</b><strong>{moneyPrecise(point.value)}</strong></div></div>
+  return <div className="chart-point-value"><div className="chart-point-heading"><b>{label}</b><div className="chart-point-total"><b>Total</b><strong>{moneyPrecise(point.value)}</strong></div></div><div className="chart-point-items">{point.items.map(item=><div key={item.name}><span>{item.name}</span><span>{moneyPrecise(item.value)}</span></div>)}</div></div>
 }
 function SpendingLine({ data }) {
+  const chartRef = useRef(null)
+  const [chartReset, setChartReset] = useState(0)
+  useEffect(() => {
+    const dismissOutsideChart = (event) => {
+      if (chartRef.current && !chartRef.current.contains(event.target)) setChartReset(value => value + 1)
+    }
+    document.addEventListener('pointerdown', dismissOutsideChart)
+    return () => document.removeEventListener('pointerdown', dismissOutsideChart)
+  }, [])
   if (!data.length) return <div className="chart-empty">Add a purchase date or subscription date range to see spending over time.</div>
-  return <div className="line-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 18, right: 18, left: 18, bottom: 8 }}>
+  return <div className="line-chart" ref={chartRef}><ResponsiveContainer width="100%" height="100%"><LineChart key={chartReset} data={data} margin={{ top: 18, right: 18, left: 18, bottom: 8 }}>
     <CartesianGrid stroke="#ffffff12" vertical={false}/>
     <XAxis dataKey="label" tick={{ fill: '#91a49a', fontSize: 11, fontFamily: 'DM Mono, monospace' }} tickLine={false} axisLine={{ stroke: '#ffffff24' }} minTickGap={35} interval="preserveStartEnd" />
     <YAxis tickFormatter={value=>money(value,true)} tick={{ fill: '#91a49a', fontSize: 10, fontFamily: 'DM Mono, monospace' }} tickLine={false} axisLine={false} width={74} />
@@ -128,13 +172,21 @@ function App() {
   const [view, setView] = useState('Overview')
   const [releaseTab, setReleaseTab] = useState('records')
   const [selected, setSelected] = useState('')
-  const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('All')
-  const [sort, setSort] = useState('Highest remaining')
+  const [search, setSearch] = useState(() => readTablePreferences().search)
+  const [filter, setFilter] = useState(() => readTablePreferences().filter)
+  const [sort, setSort] = useState(() => readTablePreferences().sort)
   const [showAll, setShowAll] = useState(false)
   const [detail, setDetail] = useState(null)
   const [spendGrouping, setSpendGrouping] = useState('month')
+  const [spendStart, setSpendStart] = useState(() => readSpendingRange().start)
+  const [spendEnd, setSpendEnd] = useState(() => readSpendingRange().end)
   const autoRefreshForKey = useRef('')
+  useEffect(() => {
+    try { window.localStorage.setItem(TABLE_PREFERENCES_STORAGE, JSON.stringify({ search, filter, sort })) } catch { /* Preferences remain usable for this session if storage is unavailable. */ }
+  }, [search, filter, sort])
+  useEffect(() => {
+    try { window.localStorage.setItem(SPENDING_RANGE_STORAGE, JSON.stringify({ start: spendStart, end: spendEnd })) } catch { /* The selected range remains usable for this session if storage is unavailable. */ }
+  }, [spendStart, spendEnd])
   useEffect(() => {
     const saved = readStoredData(apiKey)
     const updatedAtMs = Date.parse(saved?.updatedAt || '')
@@ -187,7 +239,7 @@ function App() {
     setKeyDraft('')
   }
   const all = metrics(finances)
-  const spendTrend = useMemo(() => spendingTimeline(finances, spendGrouping), [finances, spendGrouping])
+  const spendTrend = useMemo(() => spendingTimeline(finances, spendGrouping, new Date(), spendStart, spendEnd), [finances, spendGrouping, spendStart, spendEnd])
   const filtered = useMemo(() => {
     let rows = finances.filter(item => itemName(item).toLowerCase().includes(search.toLowerCase()))
     if (view === 'Release') rows = rows.filter(item => item.Essense === 'Release')
@@ -195,7 +247,16 @@ function App() {
     if (filter === 'Completed') rows = rows.filter(item => number(item['Amount Remain']) === 0)
     else if (filter === 'Pending') rows = rows.filter(item => number(item['Amount Remain']) > 0)
     else if (types.includes(filter)) rows = rows.filter(item => item.Type === filter)
-    rows.sort((a,b) => sort === 'Alphabetical' ? itemName(a).localeCompare(itemName(b)) : sort === 'Highest total' ? number(b['To Give'])-number(a['To Give']) : sort === 'Highest completion' ? number(b['Percent Given'])-number(a['Percent Given']) : number(b['Amount Remain'])-number(a['Amount Remain']))
+    rows.sort((a,b) => {
+      if (sort === 'Alphabetical') return itemName(a).localeCompare(itemName(b))
+      if (sort === 'Date (newest)' || sort === 'Date (oldest)') {
+        const aDate = dateSortValue(a.Date), bDate = dateSortValue(b.Date)
+        if (aDate === null) return bDate === null ? 0 : 1
+        if (bDate === null) return -1
+        return sort === 'Date (newest)' ? bDate - aDate : aDate - bDate
+      }
+      return sort === 'Highest total' ? number(b['To Give'])-number(a['To Give']) : sort === 'Highest completion' ? number(b['Percent Given'])-number(a['Percent Given']) : number(b['Amount Remain'])-number(a['Amount Remain'])
+    })
     return rows
   }, [view, filter, search, sort])
   const pending = finances.filter(i => number(i['Amount Remain']) > 0).sort((a,b) => number(b['Amount Remain']) - number(a['Amount Remain']))
@@ -214,7 +275,7 @@ function App() {
     {dataError && <div className="data-notice error" role="alert">Refresh failed: {dataError}. {usingFallback ? 'Showing sample records.' : 'Showing saved records.'}</div>}
     {usingFallback && <div className="data-notice fallback" role="status"><span><b>TEST DATA</b> {apiKey ? 'No saved data yet. Refresh to load records from SheetDB.' : 'Showing sample records. Connect SheetDB to load your data.'}</span><div className="notice-actions"><a className="sample-sheet-button" href={SAMPLE_SHEET_URL} target="_blank" rel="noopener noreferrer">View sample sheet</a><button onClick={()=>{setKeyDraft(apiKey);setKeyEntryOpen(true)}}>{apiKey ? 'Update SheetDB key' : 'Connect SheetDB'}</button></div></div>}
 
-    {view === 'Release' && releaseTab === 'spending' ? <section className="release-content"><div className="release-subtabs"><button onClick={()=>setReleaseTab('records')}>Table</button><button className="active" aria-current="page">Graph</button></div><div className="spending-page"><div className="spending-page-heading"><div className="eyebrow">PURCHASES & SUBSCRIPTIONS</div><h2>Spending over time</h2><p>See monthly and yearly peaks across your dated records.</p></div><Panel className="spending-trend"><div className="panel-heading"><div><div className="eyebrow">SPENDING TREND</div><h3>{spendGrouping === 'month' ? 'Monthly' : 'Yearly'} totals</h3></div><div className="chart-toggle"><button className={spendGrouping==='month'?'active':''} onClick={()=>setSpendGrouping('month')}>Month</button><button className={spendGrouping==='year'?'active':''} onClick={()=>setSpendGrouping('year')}>Year</button></div></div><SpendingLine data={spendTrend}/><p className="chart-note">Subscriptions use their monthly release amount; other dated ranges are spread across their months. The timeline ends at the current month.</p></Panel></div></section> : view === 'Overview' ? <>
+    {view === 'Release' && releaseTab === 'spending' ? <section className="release-content"><div className="release-subtabs"><button onClick={()=>setReleaseTab('records')}>Table</button><button className="active" aria-current="page">Graph</button></div><div className="spending-page"><div className="spending-page-heading"><div className="eyebrow">PURCHASES & SUBSCRIPTIONS</div><h2>Spending over time</h2><p>See monthly and yearly peaks across your dated records.</p></div><Panel className="spending-trend"><div className="panel-heading"><div><div className="eyebrow">SPENDING TREND</div><h3>{spendGrouping === 'month' ? 'Monthly' : 'Yearly'} totals</h3></div><div className="chart-controls"><label>Start month<input type="month" value={spendStart} max={spendEnd || undefined} onChange={event=>setSpendStart(event.target.value)}/></label><label>End month<input type="month" value={spendEnd} min={spendStart || undefined} onChange={event=>setSpendEnd(event.target.value)}/></label><div className="chart-toggle"><button className={spendGrouping==='month'?'active':''} onClick={()=>setSpendGrouping('month')}>Month</button><button className={spendGrouping==='year'?'active':''} onClick={()=>setSpendGrouping('year')}>Year</button></div></div></div><SpendingLine data={spendTrend}/><p className="chart-note">Subscriptions use their monthly release amount; other dated ranges are spread across their months. The timeline ends at the current month.</p></Panel></div></section> : view === 'Overview' ? <>
       <section className="hero-layout">
         <div className="hero-main"><Scene selected={selected} onSelect={setSelected}/><div className="scene-vignette"/><div className="scene-top"><span><Compass size={14}/> YOUR FINANCIAL LANDSCAPE</span><button onClick={()=>setSelected('')}><CircleHelp size={15}/></button></div>
           <div className="hero-score"><div className="hero-label"><span className="tiny-gold"/> TOTAL TRACKED FINANCIAL RECORDS</div><div className="hero-number">{money(all.total, true)}</div><div className="hero-exact">{money(all.total)} <span>across {finances.length} records</span></div><div className="score-foot"><div className="score-stats"><div><small>GIVEN</small><b>{money(all.given, true)}</b><span className="green-text"><ArrowUpRight size={13}/>{all.percent.toFixed(1)}% complete</span></div><div className="stat-divider"/><div><small>REMAINING</small><b>{money(all.remaining, true)}</b><span className="gold-text"><ArrowDownRight size={13}/>{(100-all.percent).toFixed(1)}% to go</span></div></div><Ring percent={all.percent}/></div></div>
@@ -228,7 +289,7 @@ function App() {
       <Panel><div className="panel-heading"><div><div className="eyebrow">A LITTLE ATTENTION</div><h3>Key items</h3></div><button className="view-all" onClick={()=>setShowAll(!showAll)}>{showAll?'Show less':'View all'} <span><ArrowUpRight size={12}/></span></button></div><div className="record-list">{(showAll?pending:pending.slice(0,4)).map(item=><button className="record-row" key={item.For} onClick={()=>setDetail(item)}><span className="record-icon">{item.Type==='CIBILReturn'?<CreditCard size={15}/>:<ArrowUpRight size={15}/>}</span><span className="record-name"><b>{itemName(item)}</b><small>{monthsLabel(item['Months Remained'])}</small></span><span className="record-amount"><b>{money(number(item['Amount Remain']))}</b><small>{number(item['Percent Given']).toFixed(1)}% given</small></span><span className="row-chevron"><ArrowUpRight size={13}/></span></button>)}</div><div className="list-foot">{pending.length} outstanding records <span>{money(all.remaining)} remaining</span></div></Panel></section>
       <section className="savings-formats glass"><div className="section-heading"><div><div className="eyebrow">SAVINGS OVERVIEW</div><h2>Four ways to view your balance.</h2></div></div><div className="savings-format-grid">{[['CIBIL debt-free balance',all.savingsAfterCibilDebt],['Non-CIBIL debt-free balance',all.savingsAfterNonCibilDebt],['Current savings total',all.totalSavings],['Current total after all debt',all.realCurrentTotal]].map(([label,value],i)=><div className={i>1?'savings-format-highlight':''} key={label}><span>{label}</span><b>{new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',minimumFractionDigits:2,maximumFractionDigits:2}).format(value)}</b></div>)}</div></section>
       <Panel className="completed-panel"><div className="panel-heading"><div><div className="eyebrow">MILESTONES</div><h3>Recently completed</h3></div><button className="view-all" onClick={()=>setView('All Items')}>All records <span><ArrowUpRight size={12}/></span></button></div><div className="completed-row">{completed.slice(0,6).map(item=><button key={item.For} className="complete-item" onClick={()=>setDetail(item)}><span className="check-icon"><Check size={14}/></span><span><b>{itemName(item)}</b><small>{money(number(item['Amount Given']))} completed</small></span></button>)}</div></Panel>
-    </> : <section className="records-view glass">{view==='Release'&&<div className="release-subtabs"><button className="active" aria-current="page">Table</button><button onClick={()=>setReleaseTab('spending')}>Graph</button></div>}<div className="records-heading"><div><div className="eyebrow">{view === 'Store'?'SAVINGS & INVESTMENTS':view==='Release'?'OBLIGATIONS & RELEASES':'YOUR FINANCIAL RECORDS'}</div><h2>{view==='All Items'?'Every detail, in view.':view==='Store'?'What you are growing.':'What you are working through.'}</h2><p>{filtered.length} records  |  {money(metrics(filtered).total)} tracked</p></div><div className="record-actions"><label className="searchbox"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search records"/><kbd>Ctrl K</kbd></label><label className="selectbox"><SlidersHorizontal size={15}/><select value={filter} onChange={e=>setFilter(e.target.value)}><option>All</option><option>Completed</option><option>Pending</option>{types.map(t=><option key={t} value={t}>{typeLabels[t]}</option>)}</select></label><label className="selectbox"><select value={sort} onChange={e=>setSort(e.target.value)}><option>Highest remaining</option><option>Highest total</option><option>Highest completion</option><option>Alphabetical</option></select></label></div></div><div className="table-wrap"><table><thead><tr><th>ITEM</th><th>CLASSIFICATION</th><th>TOTAL</th><th>GIVEN</th><th>REMAINING</th><th>PROGRESS</th><th/></tr></thead><tbody>{filtered.map(item=><tr key={item.For} onClick={()=>setDetail(item)}><td><span className="table-icon">{item.Essense==='Store'?<Sparkle size={14}/>:<ArrowUpRight size={14}/>}</span><b>{itemName(item)}</b></td><td><span className={`type-pill ${item.Type}`}>{typeLabels[item.Type]}</span></td><td>{money(number(item['To Give']))}</td><td className="green-text">{money(number(item['Amount Given']))}</td><td className={number(item['Amount Remain'])?'gold-text':''}>{money(number(item['Amount Remain']))}</td><td><div className="table-progress"><div className="progress-track"><i style={{width:`${Math.min(number(item['Percent Given']),100)}%`}}/></div><small>{number(item['Percent Given']).toFixed(1)}%</small></div></td><td><ArrowUpRight size={13}/></td></tr>)}</tbody></table>{filtered.length===0&&<div className="empty-state">No records match this search.</div>}</div></section>}
+    </> : <section className="records-view glass">{view==='Release'&&<div className="release-subtabs"><button className="active" aria-current="page">Table</button><button onClick={()=>setReleaseTab('spending')}>Graph</button></div>}<div className="records-heading"><div><div className="eyebrow">{view === 'Store'?'SAVINGS & INVESTMENTS':view==='Release'?'OBLIGATIONS & RELEASES':'YOUR FINANCIAL RECORDS'}</div><h2>{view==='All Items'?'Every detail, in view.':view==='Store'?'What you are growing.':'What you are working through.'}</h2><p>{filtered.length} records  |  {money(metrics(filtered).total)} tracked</p></div><div className="record-actions"><label className="searchbox"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search records"/><kbd>Ctrl K</kbd></label><label className="selectbox"><SlidersHorizontal size={15}/><select value={filter} onChange={e=>setFilter(e.target.value)}><option>All</option><option>Completed</option><option>Pending</option>{types.map(t=><option key={t} value={t}>{typeLabels[t]}</option>)}</select></label><label className="selectbox"><select value={sort} onChange={e=>setSort(e.target.value)}><option>Highest remaining</option><option>Highest total</option><option>Highest completion</option><option>Alphabetical</option><option>Date (newest)</option><option>Date (oldest)</option></select></label></div></div><div className="table-wrap"><table><thead><tr><th>ITEM</th><th>CLASSIFICATION</th><th>DATE</th><th>TOTAL</th><th>GIVEN</th><th>REMAINING</th><th>PROGRESS</th><th/></tr></thead><tbody>{filtered.map(item=><tr key={item.For} onClick={()=>setDetail(item)}><td><span className="table-icon">{item.Essense==='Store'?<Sparkle size={14}/>:<ArrowUpRight size={14}/>}</span><b>{itemName(item)}</b></td><td><span className={`type-pill ${item.Type}`}>{typeLabels[item.Type]}</span></td><td>{String(item.Date || '').trim() || '—'}</td><td>{money(number(item['To Give']))}</td><td className="green-text">{money(number(item['Amount Given']))}</td><td className={number(item['Amount Remain'])?'gold-text':''}>{money(number(item['Amount Remain']))}</td><td><div className="table-progress"><div className="progress-track"><i style={{width:`${Math.min(number(item['Percent Given']),100)}%`}}/></div><small>{number(item['Percent Given']).toFixed(1)}%</small></div></td><td><ArrowUpRight size={13}/></td></tr>)}</tbody></table>{filtered.length===0&&<div className="empty-state">No records match this search.</div>}</div></section>}
     <footer><span><Sparkle size={12}/>Built for the long view.</span><span>FINANCES - PERSONAL FINANCIAL ATLAS</span></footer>
     <AnimatePresence>{keyEntryOpen&&<motion.div className="modal-backdrop key-backdrop" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.form className="key-modal glass" onSubmit={saveApiKey} initial={{opacity:0,y:18,scale:.97}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:12,scale:.98}}><div className="key-emblem"><Leaf size={21}/><i/></div><div className="eyebrow">YOUR PRIVATE FINANCIAL ATLAS</div><h2>Connect your<br/><em>financial world.</em></h2><p>Enter your SheetDB key to bring your records into the landscape. It stays in this browser for your next visit.</p><label className="key-field"><span>SHEETDB API KEY</span><input autoFocus value={keyDraft} onChange={event=>setKeyDraft(event.target.value)} placeholder="Paste your SheetDB key" autoComplete="off" spellCheck="false" required/></label><button className="key-submit" type="submit">Open my dashboard <span><ArrowUpRight size={12}/></span></button><div className="key-foot"><span className="live-dot"/> Stored locally on this device</div></motion.form></motion.div>}</AnimatePresence>    <AnimatePresence>{detail&&<motion.div className="modal-backdrop" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onClick={()=>setDetail(null)}><motion.div className="detail-modal glass" initial={{y:20,scale:.97}} animate={{y:0,scale:1}} exit={{y:20,scale:.97}} onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setDetail(null)}><X size={18}/></button><div className="eyebrow">RECORD DETAILS</div><h2>{itemName(detail)}</h2><span className="type-pill">{typeLabels[detail.Type]}  |  {detail.Essense}</span><div className="detail-total">{money(number(detail['To Give']))}<small>total commitment</small></div><div className="detail-progress"><div className="progress-track"><i style={{width:`${Math.min(number(detail['Percent Given']),100)}%`}}/></div><span>{number(detail['Percent Given']).toFixed(1)}% complete</span></div><div className="detail-grid">{[['Given',money(number(detail['Amount Given']))],['Remaining',money(number(detail['Amount Remain']))],['Monthly release',number(detail['Monthly Release'])?money(number(detail['Monthly Release'])):'Not specified'],['Months remaining',monthsLabel(detail['Months Remained'])],['Date',detail.Date||'Not specified'],['Subscription',String(detail['Is Subscription']||'').toLowerCase()==='true'?'Yes':'No'],['Payment method',detail['Method ']||'Not specified'],['Essense',detail.Essense],['Type',detail.Type]].map(([label,value])=><div key={label}><small>{label}</small><b>{value}</b></div>)}</div></motion.div></motion.div>}</AnimatePresence>
   </main>

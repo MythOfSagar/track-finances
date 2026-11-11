@@ -61,7 +61,7 @@ const parseMonth = (value) => {
   if (year < 100) year += year >= 70 ? 1900 : 2000
   return { year, month }
 }
-export const spendingTimeline = (items = [], grouping = 'month', now = new Date()) => {
+export const spendingTimeline = (items = [], grouping = 'month', now = new Date(), rangeStart = '', rangeEnd = '') => {
   const totals = new Map()
   const current = new Date(now.getFullYear(), now.getMonth(), 1)
   const add = (date, amount, item) => {
@@ -100,16 +100,28 @@ export const spendingTimeline = (items = [], grouping = 'month', now = new Date(
   if (!totals.size) return []
   const keys = [...totals.keys()].sort()
   const toPoint = (label, bucket) => ({ label, value: bucket.value, items: [...bucket.items].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value) })
+  const parseRange = (value) => {
+    const match = String(value || '').match(/^(\d{4})-(\d{2})$/)
+    return match ? new Date(Number(match[1]), Number(match[2]) - 1, 1) : null
+  }
+  const selectedStart = parseRange(rangeStart)
+  const selectedEnd = parseRange(rangeEnd)
   if (grouping === 'year') {
     const firstYear = Number(keys[0])
     return Array.from({ length: current.getFullYear() - firstYear + 1 }, (_, index) => {
       const year = String(firstYear + index)
       return toPoint(year, totals.get(year) || { value: 0, items: new Map() })
+    }).filter(point => {
+      const year = Number(point.label)
+      const firstMonth = new Date(year, 0, 1)
+      const lastMonth = new Date(year, 11, 1)
+      return (!selectedStart || lastMonth >= selectedStart) && (!selectedEnd || firstMonth <= selectedEnd)
     })
   }
   const [firstYear, firstMonth] = keys[0].split('-').map(Number)
   const rows = []
   for (let date = new Date(firstYear, firstMonth - 1, 1); date <= current; date.setMonth(date.getMonth() + 1)) {
+    if ((selectedStart && date < selectedStart) || (selectedEnd && date > selectedEnd)) continue
     const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
     rows.push(totals.has(key)
       ? toPoint(date.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }), totals.get(key))
